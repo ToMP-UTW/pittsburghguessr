@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PittsburghGuessr</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a1a; color: #fff; height: 100vh; overflow: hidden; }
+
+  /* ===== TOP BAR ===== */
+  #topbar {
+    height: 52px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 24px; background: linear-gradient(135deg, #0f1628, #1a1f3a);
+    border-bottom: 2px solid #f5c518; z-index: 1000; position: relative;
+  }
+  .logo h1 { font-size: 20px; font-weight: 800; letter-spacing: 0.5px; }
+  .logo .pgh { color: #f5c518; }
+  .logo .guessr { color: #fff; }
+  .bar-info { display: flex; gap: 28px; font-size: 14px; }
+  .bar-info span { color: #8892b0; }
+  .bar-info strong { color: #f5c518; font-weight: 700; }
+
+  /* ===== GAME AREA ===== */
+  #game-area { height: calc(100vh - 52px); position: relative; }
+  #streetview-container {
+    width: 100%; height: 100%; background: #0f0f23; position: relative;
+  }
+  #streetview-container iframe {
+    width: 100%; height: 100%; border: none;
+  }
+  #sv-loading {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: #4a5580; z-index: 1; pointer-events: none;
+  }
+  /* Hide Google Maps labels that give away the answer */
+  .sv-cover-top {
+    position: absolute; top: 0; left: 0; width: 320px; height: 90px;
+    background: linear-gradient(135deg, rgba(10,10,26,0.95) 60%, transparent 100%);
+    z-index: 2; pointer-events: none;
+  }
+  .sv-cover-bottom {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 56px;
+    background: linear-gradient(to top, rgba(10,10,26,1) 40%, transparent 100%);
+    z-index: 2; pointer-events: none;
+  }
+
+  /* ===== GUESS MAP PANEL ===== */
+  #map-panel {
+    position: absolute; bottom: 24px; right: 24px; z-index: 900;
+    width: 300px; height: 220px;
+    border-radius: 12px; overflow: hidden;
+    border: 2px solid rgba(245,197,24,0.6);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    opacity: 0.75;
+  }
+  #map-panel:hover, #map-panel.expanded {
+    width: 460px; height: 360px;
+    opacity: 1; border-color: #f5c518;
+  }
+  #guess-map { width: 100%; height: 100%; }
+
+  #guess-btn {
+    position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+    z-index: 1000; padding: 10px 32px;
+    background: linear-gradient(135deg, #f5c518, #e6b800);
+    color: #0a0a1a; border: none; border-radius: 8px;
+    font-size: 14px; font-weight: 700; cursor: pointer;
+    box-shadow: 0 4px 16px rgba(245,197,24,0.3);
+    transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  #guess-btn:hover { transform: translateX(-50%) scale(1.05); }
+  #guess-btn:disabled { background: #333; color: #666; cursor: not-allowed; box-shadow: none; }
+  #guess-btn:disabled:hover { transform: translateX(-50%) scale(1); }
+
+  /* ===== RESULT OVERLAY ===== */
+  #result-overlay {
+    display: none; position: fixed; inset: 0; z-index: 2000;
+    background: rgba(0,0,0,0.85); backdrop-filter: blur(8px);
+    flex-direction: column; align-items: center; justify-content: center;
+  }
+  #result-overlay.active { display: flex; }
+  #result-card {
+    background: linear-gradient(135deg, #141828, #1a2040);
+    border: 1px solid rgba(245,197,24,0.3); border-radius: 16px;
+    padding: 36px 48px; text-align: center; max-width: 520px;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+  }
+  #result-card h2 { font-size: 32px; margin-bottom: 10px; font-weight: 800; }
+  .result-perfect { color: #22c55e; }
+  .result-great { color: #f5c518; }
+  .result-ok { color: #fb923c; }
+  .result-bad { color: #ef4444; }
+  #result-card .distance { font-size: 24px; color: #f5c518; margin-bottom: 6px; font-weight: 700; }
+  #result-card .points { font-size: 16px; color: #8892b0; margin-bottom: 6px; }
+  #result-card .location-name { font-size: 14px; color: #4a5580; margin-bottom: 20px; font-style: italic; }
+  #result-map-container { width: 440px; height: 240px; border-radius: 12px; margin-bottom: 24px; overflow: hidden; border: 1px solid #2a2a4a; }
+  #next-btn {
+    padding: 12px 40px; background: linear-gradient(135deg, #f5c518, #e6b800);
+    color: #0a0a1a; border: none; border-radius: 8px;
+    font-size: 15px; font-weight: 700; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 0.5px; transition: transform 0.2s;
+  }
+  #next-btn:hover { transform: scale(1.05); }
+
+  /* ===== SCREENS ===== */
+  .screen-overlay {
+    display: none; position: fixed; inset: 0; z-index: 3000;
+    background: linear-gradient(135deg, #0a0a1a 0%, #141828 50%, #0a0a1a 100%);
+    flex-direction: column; align-items: center; justify-content: center;
+  }
+  .screen-overlay.active { display: flex; }
+  .title-container { text-align: center; margin-bottom: 36px; }
+  .title-container h1 { font-size: 56px; font-weight: 800; margin-bottom: 4px; }
+  .title-container .subtitle { font-size: 18px; color: #4a5580; font-weight: 400; }
+  .big-score { font-size: 72px; color: #f5c518; font-weight: 800; margin-bottom: 4px; }
+  .max-score { font-size: 16px; color: #4a5580; margin-bottom: 28px; }
+  .play-btn {
+    padding: 16px 56px; background: linear-gradient(135deg, #f5c518, #e6b800);
+    color: #0a0a1a; border: none; border-radius: 12px;
+    font-size: 18px; font-weight: 800; cursor: pointer;
+    letter-spacing: 1.5px; text-transform: uppercase;
+    box-shadow: 0 8px 32px rgba(245,197,24,0.3); transition: all 0.2s;
+  }
+  .play-btn:hover { transform: scale(1.05); box-shadow: 0 12px 40px rgba(245,197,24,0.5); }
+  #round-scores { margin-bottom: 28px; text-align: left; min-width: 340px; }
+  #round-scores div {
+    display: flex; justify-content: space-between; gap: 20px;
+    padding: 8px 0; border-bottom: 1px solid #1a2040; font-size: 14px; color: #8892b0;
+  }
+  #round-scores div strong { color: #f5c518; }
+  .score-bar {
+    position: absolute; bottom: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, #f5c518, #22c55e);
+    transition: width 0.5s ease;
+  }
+  .leaflet-container { background: #0f1628 !important; }
+</style>
+</head>
+<body>
+
+<!-- Start Screen -->
+<div id="start-screen" class="screen-overlay active">
+  <div class="title-container">
+    <h1><span style="color:#f5c518">Pittsburgh</span><span style="color:#fff">Guessr</span></h1>
+    <p class="subtitle">How well do you know the Steel City?</p>
+  </div>
+  <button class="play-btn" onclick="startGame()">PLAY</button>
+</div>
+
+<!-- End Screen -->
+<div id="end-screen" class="screen-overlay">
+  <div class="title-container">
+    <h1><span style="color:#f5c518">Pittsburgh</span><span style="color:#fff">Guessr</span></h1>
+    <p class="subtitle">Game Complete!</p>
+  </div>
+  <div class="big-score" id="final-score">0</div>
+  <div class="max-score">out of 25,000</div>
+  <div id="round-scores"></div>
+  <button class="play-btn" onclick="startGame()">PLAY AGAIN</button>
+</div>
+
+<!-- Top Bar -->
+<div id="topbar">
+  <div class="logo">
+    <h1><span class="pgh">Pittsburgh</span><span class="guessr">Guessr</span></h1>
+  </div>
+  <div class="bar-info">
+    <span>Round <strong id="round-num">1</strong> / 5</span>
+    <span>Score <strong id="total-score">0</strong></span>
+  </div>
+  <div class="score-bar" id="score-bar" style="width:0%"></div>
+</div>
+
+<!-- Game Area -->
+<div id="game-area">
+  <div id="streetview-container">
+    <div id="sv-loading">Loading street view...</div>
+    <div class="sv-cover-top"></div>
+    <div class="sv-cover-bottom"></div>
+  </div>
+  <div id="map-panel">
+    <div id="guess-map"></div>
+    <button id="guess-btn" disabled onclick="submitGuess()">Place a pin first</button>
+  </div>
+</div>
+
+<!-- Result Overlay -->
+<div id="result-overlay">
+  <div id="result-card">
+    <h2 id="result-title">Nice!</h2>
+    <div class="distance" id="result-distance"></div>
+    <div class="points" id="result-points"></div>
+    <div class="location-name" id="result-location"></div>
+    <div id="result-map-container"><div id="result-map" style="width:100%;height:100%"></div></div>
+    <button id="next-btn" onclick="nextRound()">Next Round</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ===== PITTSBURGH LOCATIONS (with pre-fetched pano IDs) =====
+const LOCATIONS = [
+  { lat: 40.4704, lng: -80.0122, name: "Deutschtown - E Ohio St", pano: "V3E8949gO5KWbicpI54w8w" },
+  { lat: 40.4676, lng: -80.0216, name: "Troy Hill", pano: "JRI1Y1qSi68y809iVoUADQ" },
+  { lat: 40.4604, lng: -79.9542, name: "Spring Garden", pano: "5zI3dAXJVsEvHD_mARMzgg" },
+  { lat: 40.4292, lng: -79.9791, name: "South Side - E Carson St", pano: "lXtycWnSaaaJ-GOaeo3Jvg" },
+  { lat: 40.4328, lng: -80.0186, name: "Duquesne Incline", pano: "bHiCfbTAO2Vm-FGTusYoGA" },
+  { lat: 40.4389, lng: -79.935, name: "CMU Campus", pano: "KdjWQDWCgmbqfCJY1ad8-A" },
+  { lat: 40.4483, lng: -79.9658, name: "Herron Ave", pano: "KUrAkrkP7A5N_XcC7H4ZwA" },
+  { lat: 40.458, lng: -79.9383, name: "Bloomfield - Liberty Ave", pano: "KrQqHp4C5hCbkuiLTyFaaA" },
+  { lat: 40.4484, lng: -79.9307, name: "Shadyside - Walnut St", pano: "IBMLXczXDmCg0fUf_ZjF3Q" },
+  { lat: 40.4615, lng: -79.9008, name: "Highland Park - Bryant St", pano: "5QV2dkPfCypWzpT9kgi1Rw" },
+  { lat: 40.452, lng: -79.98, name: "Strip District - Smallman St", pano: "UpLcy3w6k3iBuAWzOPKufw" },
+  { lat: 40.4352, lng: -79.9971, name: "Station Square", pano: "vD2QPLMGzsUV0RQYbK2Sdw" },
+  { lat: 40.412, lng: -79.9313, name: "Greenfield - Greenfield Ave", pano: "of9wC_UhTVElfupURXT6xA" },
+  { lat: 40.4195, lng: -80.0387, name: "Crafton - Noble Ave", pano: "dnSmPJ_XQCHvZ-6-e1iehw" },
+  { lat: 40.3979, lng: -79.9119, name: "Homestead - E 8th Ave", pano: "XUYTVecsWgMUQSMjl0u31w" },
+  { lat: 40.4207, lng: -79.8821, name: "Swissvale - Noble St", pano: "n5yqSB0BQBWITwzQeChFEw" },
+  { lat: 40.447, lng: -79.8766, name: "Wilkinsburg - Penn Ave", pano: "Rn_UrxUPTO1kiF6oHpbenA" },
+  { lat: 40.4113, lng: -79.9471, name: "Hazelwood - 2nd Ave", pano: "2OJnHk1T4NM0-Y8X5WrGTw" },
+  { lat: 40.4076, lng: -79.966, name: "Carrick - Brownsville Rd", pano: "F0ffijKfTE2Gp1Gw19O0Ig" },
+  { lat: 40.4358, lng: -79.8668, name: "Edgewood - Swissvale Ave", pano: "bZa0nPBHma0aA9XPZde5Rg" },
+  { lat: 40.4709, lng: -79.9591, name: "Millvale - Grant Ave", pano: "Un4GJdEHeMrvT0vqFrm7kw" },
+  { lat: 40.422, lng: -79.9524, name: "Panther Hollow", pano: "4Vqy6sXQW_v0wySSlI64gg" },
+  { lat: 40.4499, lng: -80.0172, name: "West End Overlook", pano: "h-J7e906l6Gam5UV4nTkuA" },
+  { lat: 40.4456, lng: -79.9906, name: "Andy Warhol Museum area", pano: "97azmmpgSpr0UU_bpx_2iQ" },
+  { lat: 40.4394, lng: -79.9518, name: "Schenley Drive", pano: "ydApuVKYlpWhr_3jttWNHA" },
+  { lat: 40.4341, lng: -79.9561, name: "Bates St", pano: "MTqJou_gvTVKabzyL5hGrQ" },
+  { lat: 40.4466, lng: -79.9742, name: "Centre Ave - Hill District", pano: "IlX-wC1BR-RpBMscG4SS2g" },
+  { lat: 40.4552, lng: -79.9632, name: "Bigelow Blvd", pano: "l6E2_9rlB-WZT5LWwjVliw" },
+  { lat: 40.4313, lng: -79.898, name: "Beechwood Blvd", pano: "qFN3wjn7PxB3j7PRxAOmaA" },
+  { lat: 40.4582, lng: -79.9721, name: "Penn Ave - Garfield", pano: "En9GWFhNxnvA73v8NykHPg" },
+];
+
+// ===== GAME STATE =====
+let currentRound = 0;
+let totalScore = 0;
+let roundScores = [];
+let currentLocation = null;
+let guessMarker = null;
+let guessMap = null;
+let resultMapObj = null;
+let usedIndices = new Set();
+
+// ===== LOAD STREET VIEW =====
+function loadStreetView(panoId, lat, lng) {
+  const container = document.getElementById('streetview-container');
+  const loading = document.getElementById('sv-loading');
+  const oldIframe = container.querySelector('iframe');
+  if (oldIframe) oldIframe.remove();
+  loading.style.display = 'flex';
+
+  const heading = Math.floor(Math.random() * 360);
+  const ts = Date.now();
+  const iframe = document.createElement('iframe');
+  iframe.src = `https://www.google.com/maps/embed?pb=!4v${ts}!6m8!1m7!1s${encodeURIComponent(panoId)}!2m2!1d${lat}!2d${lng}!3f${heading}!4f5!5f0.7820865974627469`;
+  iframe.allow = "accelerometer; gyroscope";
+  iframe.referrerPolicy = "no-referrer-when-downgrade";
+  iframe.allowFullscreen = true;
+  iframe.style.cssText = 'width:100%;height:100%;border:none;';
+  iframe.onload = () => { loading.style.display = 'none'; };
+  container.appendChild(iframe);
+}
+
+// ===== MAP SETUP =====
+function initGuessMap() {
+  if (guessMap) guessMap.remove();
+  guessMap = L.map('guess-map', {
+    zoomControl: false,
+    attributionControl: false,
+  }).setView([40.4406, -79.9959], 11);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(guessMap);
+  L.control.zoom({ position: 'topright' }).addTo(guessMap);
+
+  guessMap.on('click', function(e) {
+    if (guessMarker) guessMap.removeLayer(guessMarker);
+    guessMarker = L.marker(e.latlng, {
+      icon: L.divIcon({
+        className: 'guess-pin',
+        html: '<div style="width:16px;height:16px;background:#f5c518;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,0.5);"></div>',
+        iconSize: [16, 16], iconAnchor: [8, 8],
+      })
+    }).addTo(guessMap);
+    document.getElementById('guess-btn').disabled = false;
+    document.getElementById('guess-btn').textContent = 'GUESS';
+  });
+}
+
+// ===== HAVERSINE =====
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ===== SCORING =====
+function calculateScore(distanceKm) {
+  return Math.max(0, Math.min(5000, Math.round(5000 * Math.exp(-distanceKm / 3))));
+}
+
+// ===== PICK LOCATION =====
+function pickLocation() {
+  if (usedIndices.size >= LOCATIONS.length) usedIndices.clear();
+  let idx;
+  do { idx = Math.floor(Math.random() * LOCATIONS.length); } while (usedIndices.has(idx));
+  usedIndices.add(idx);
+  return LOCATIONS[idx];
+}
+
+// ===== GAME FLOW =====
+function startGame() {
+  currentRound = 0;
+  totalScore = 0;
+  roundScores = [];
+  usedIndices.clear();
+  document.getElementById('start-screen').classList.remove('active');
+  document.getElementById('end-screen').classList.remove('active');
+  document.getElementById('total-score').textContent = '0';
+  document.getElementById('score-bar').style.width = '0%';
+  initGuessMap();
+  nextRound();
+}
+
+function nextRound() {
+  document.getElementById('result-overlay').classList.remove('active');
+  if (currentRound >= 5) { endGame(); return; }
+
+  currentRound++;
+  document.getElementById('round-num').textContent = currentRound;
+
+  if (guessMarker) { guessMap.removeLayer(guessMarker); guessMarker = null; }
+  document.getElementById('guess-btn').disabled = true;
+  document.getElementById('guess-btn').textContent = 'Place a pin first';
+  guessMap.setView([40.4406, -79.9959], 11);
+  setTimeout(() => guessMap.invalidateSize(), 200);
+
+  currentLocation = pickLocation();
+  loadStreetView(currentLocation.pano, currentLocation.lat, currentLocation.lng);
+}
+
+function submitGuess() {
+  if (!guessMarker || !currentLocation) return;
+
+  const guessLat = guessMarker.getLatLng().lat;
+  const guessLng = guessMarker.getLatLng().lng;
+  const dist = haversine(guessLat, guessLng, currentLocation.lat, currentLocation.lng);
+  const points = calculateScore(dist);
+
+  totalScore += points;
+  roundScores.push({ name: currentLocation.name, dist, points });
+  document.getElementById('total-score').textContent = totalScore.toLocaleString();
+  document.getElementById('score-bar').style.width = `${(totalScore / 25000) * 100}%`;
+
+  let title, cls;
+  if (dist < 0.1) { title = "PERFECT!"; cls = 'result-perfect'; }
+  else if (dist < 0.5) { title = "Amazing!"; cls = 'result-perfect'; }
+  else if (dist < 1) { title = "Great!"; cls = 'result-great'; }
+  else if (dist < 3) { title = "Nice!"; cls = 'result-great'; }
+  else if (dist < 7) { title = "Not bad"; cls = 'result-ok'; }
+  else { title = "Hmm..."; cls = 'result-bad'; }
+
+  const h2 = document.getElementById('result-title');
+  h2.textContent = title; h2.className = cls;
+  document.getElementById('result-distance').textContent =
+    dist < 1 ? `${Math.round(dist * 1000)} meters away` : `${dist.toFixed(1)} km away`;
+  document.getElementById('result-points').textContent = `+${points.toLocaleString()} points`;
+  document.getElementById('result-location').textContent = currentLocation.name;
+  document.getElementById('next-btn').textContent = currentRound >= 5 ? "See Results" : "Next Round";
+
+  document.getElementById('result-overlay').classList.add('active');
+
+  setTimeout(() => {
+    if (resultMapObj) resultMapObj.remove();
+    resultMapObj = L.map('result-map', { zoomControl: false, attributionControl: false });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(resultMapObj);
+
+    L.marker([currentLocation.lat, currentLocation.lng], {
+      icon: L.divIcon({
+        className: '', html: '<div style="width:18px;height:18px;background:#22c55e;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,0.5);"></div>',
+        iconSize: [18, 18], iconAnchor: [9, 9],
+      })
+    }).addTo(resultMapObj).bindPopup(`<b>${currentLocation.name}</b>`).openPopup();
+
+    L.marker([guessLat, guessLng], {
+      icon: L.divIcon({
+        className: '', html: '<div style="width:18px;height:18px;background:#f5c518;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,0.5);"></div>',
+        iconSize: [18, 18], iconAnchor: [9, 9],
+      })
+    }).addTo(resultMapObj);
+
+    L.polyline([[guessLat, guessLng], [currentLocation.lat, currentLocation.lng]], {
+      color: '#f5c518', weight: 2, dashArray: '8,8', opacity: 0.8,
+    }).addTo(resultMapObj);
+
+    resultMapObj.fitBounds(
+      L.latLngBounds([guessLat, guessLng], [currentLocation.lat, currentLocation.lng]),
+      { padding: [50, 50], maxZoom: 15 }
+    );
+  }, 150);
+}
+
+function endGame() {
+  document.getElementById('final-score').textContent = totalScore.toLocaleString();
+  document.getElementById('round-scores').innerHTML = roundScores.map((r, i) =>
+    `<div><span>Round ${i + 1}: ${r.name}</span> <strong>+${r.points.toLocaleString()}</strong></div>`
+  ).join('');
+  document.getElementById('end-screen').classList.add('active');
+}
+</script>
+</body>
+</html>

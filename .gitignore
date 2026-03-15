@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+locations.json
+locations_type2.json
+.claude/
