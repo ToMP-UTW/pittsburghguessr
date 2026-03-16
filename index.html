@@ -392,10 +392,14 @@ const LEBO_LOCATIONS = [
   { lat: 40.3842, lng: -80.0422, name: "Beadling Rd", pano: "a58d8GHMUuT2HXZ-O5YbRw" },
 ];
 
-// Map center for each region
+// Map center and bounds for each region
 const MAP_CENTERS = {
   pittsburgh: { lat: 40.4406, lng: -79.9959, zoom: 11 },
   lebo: { lat: 40.3740, lng: -80.0470, zoom: 14 },
+};
+const REGION_BOUNDS = {
+  pittsburgh: { minLat: 40.36, maxLat: 40.50, minLng: -80.10, maxLng: -79.86 },
+  lebo: { minLat: 40.360, maxLat: 40.390, minLng: -80.065, maxLng: -80.030 },
 };
 
 // ===== SEEDED PRNG (mulberry32) =====
@@ -499,6 +503,42 @@ function updateDailyBtnForRegion(btnId, infoId, region, defaultSub) {
     btn.onclick = () => startGame('daily', region);
     info.textContent = '';
   }
+}
+
+// ===== RANDOM PANO FETCHER (practice mode) =====
+const RPC_URL = 'https://maps.googleapis.com/$rpc/google.internal.maps.mapsjs.v1.MapsJsInternalService/SingleImageSearch';
+
+async function fetchRandomPano(maxRetries) {
+  const bounds = REGION_BOUNDS[gameRegion] || REGION_BOUNDS.pittsburgh;
+  for (let attempt = 0; attempt < (maxRetries || 15); attempt++) {
+    const lat = bounds.minLat + Math.random() * (bounds.maxLat - bounds.minLat);
+    const lng = bounds.minLng + Math.random() * (bounds.maxLng - bounds.minLng);
+    try {
+      const body = JSON.stringify([["apiv3"], [[null, null, lat, lng], 200], null, [[1, 2, 3, 4, 8, 6]]]);
+      const resp = await fetch(RPC_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json+protobuf' },
+        body: body,
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data[1] && data[1][1] && data[1][1].length > 1) {
+          const imgType = data[1][1][0];
+          const panoId = data[1][1][1];
+          if (imgType !== 2) continue; // only official street view
+          let actualLat = lat, actualLng = lng;
+          try { actualLat = data[5][0][1][0][2]; actualLng = data[5][0][1][0][3]; } catch(e) {}
+          // Verify it's within bounds
+          if (actualLat < bounds.minLat || actualLat > bounds.maxLat ||
+              actualLng < bounds.minLng || actualLng > bounds.maxLng) continue;
+          return { lat: Math.round(actualLat * 10000) / 10000, lng: Math.round(actualLng * 10000) / 10000, pano: panoId, name: 'Unknown Location' };
+        }
+      }
+    } catch(e) { /* retry */ }
+  }
+  // Fallback: pick from curated list if random fails
+  const locs = getActiveLocations();
+  return locs[Math.floor(Math.random() * locs.length)];
 }
 
 // ===== CUSTOM PANORAMA VIEWER (tile-based, no Google UI) =====
@@ -668,16 +708,12 @@ function calculateScore(distanceKm) {
 }
 
 // ===== PICK LOCATION =====
-function pickLocation() {
+async function pickLocation() {
   if (gameMode === 'daily') {
     return dailyLocations[currentRound - 1];
   }
-  const locs = getActiveLocations();
-  if (usedIndices.size >= locs.length) usedIndices.clear();
-  let idx;
-  do { idx = Math.floor(Math.random() * locs.length); } while (usedIndices.has(idx));
-  usedIndices.add(idx);
-  return locs[idx];
+  // Practice mode: fetch a random pano on the fly
+  return await fetchRandomPano();
 }
 
 // ===== GAME FLOW =====
@@ -719,7 +755,7 @@ function startGame(mode, region) {
   nextRound();
 }
 
-function nextRound() {
+async function nextRound() {
   document.getElementById('result-overlay').classList.remove('active');
   if (currentRound >= 5) { endGame(); return; }
 
@@ -732,7 +768,12 @@ function nextRound() {
   guessMap.setView([getMapCenter().lat, getMapCenter().lng], getMapCenter().zoom);
   setTimeout(() => guessMap.invalidateSize(), 200);
 
-  currentLocation = pickLocation();
+  // Show loading for random mode (pano fetch takes a moment)
+  if (gameMode !== 'daily') {
+    document.getElementById('sv-loading').style.display = 'flex';
+  }
+
+  currentLocation = await pickLocation();
   loadStreetView(currentLocation.pano, currentLocation.lat, currentLocation.lng);
 }
 
@@ -762,7 +803,8 @@ function submitGuess() {
   document.getElementById('result-distance').textContent =
     dist < 1 ? `${Math.round(dist * 1000)} meters away` : `${dist.toFixed(1)} km away`;
   document.getElementById('result-points').textContent = `+${points.toLocaleString()} points`;
-  document.getElementById('result-location').textContent = currentLocation.name;
+  const locLabel = currentLocation.name !== 'Unknown Location' ? currentLocation.name : `${currentLocation.lat.toFixed(4)}, ${currentLocation.lng.toFixed(4)}`;
+  document.getElementById('result-location').textContent = locLabel;
   document.getElementById('next-btn').textContent = currentRound >= 5 ? "See Results" : "Next Round";
 
   document.getElementById('result-overlay').classList.add('active');
@@ -804,9 +846,10 @@ function endGame() {
   }
 
   document.getElementById('final-score').textContent = totalScore.toLocaleString();
-  document.getElementById('round-scores').innerHTML = roundScores.map((r, i) =>
-    `<div><span>Round ${i + 1}: ${r.name}</span> <strong>+${r.points.toLocaleString()}</strong></div>`
-  ).join('');
+  document.getElementById('round-scores').innerHTML = roundScores.map((r, i) => {
+    const label = r.name !== 'Unknown Location' ? r.name : `Round ${i + 1}`;
+    return `<div><span>${label}</span> <strong>+${r.points.toLocaleString()}</strong></div>`;
+  }).join('');
 
   // Update subtitle and share button
   const subtitle = document.getElementById('end-subtitle');
