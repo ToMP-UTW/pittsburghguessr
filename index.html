@@ -34,25 +34,24 @@
   #streetview-container {
     width: 100%; height: 100%; background: #0f0f23; position: relative;
   }
-  #streetview-container iframe {
-    width: 100%; height: 100%; border: none;
-  }
   #sv-loading {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    font-size: 16px; color: #4a5580; z-index: 1; pointer-events: none;
+    font-size: 16px; color: #4a5580; z-index: 5; pointer-events: none;
   }
-  /* Hide Google Maps labels that give away the answer */
-  .sv-cover-top {
-    position: absolute; top: 0; left: 0; width: 360px; height: 100px;
-    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-    background: linear-gradient(135deg, rgba(10,10,26,0.7) 50%, transparent 100%);
-    z-index: 2; pointer-events: none;
+  /* Custom panorama viewer */
+  #pano-viewer {
+    width: 100%; height: 100%; overflow: hidden; position: relative;
+    cursor: grab; user-select: none; -webkit-user-select: none;
   }
-  .sv-cover-bottom {
-    position: absolute; bottom: 0; left: 0; right: 0; height: 72px;
-    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-    background: linear-gradient(to top, rgba(10,10,26,0.7) 30%, rgba(10,10,26,0.3) 70%, transparent 100%);
-    z-index: 2; pointer-events: none;
+  #pano-viewer:active { cursor: grabbing; }
+  .pano-strip {
+    position: absolute; top: 0; left: 0;
+    will-change: transform;
+    image-rendering: auto;
+  }
+  .pano-strip img {
+    position: absolute; display: block;
+    user-select: none; -webkit-user-drag: none; pointer-events: none;
   }
 
   /* ===== GUESS MAP PANEL ===== */
@@ -137,9 +136,6 @@
     #round-scores { min-width: 0; width: 90vw; max-width: 360px; }
     #result-map-container { width: 85vw; max-width: 440px; height: 200px; }
     #result-card { padding: 24px 20px; }
-
-    .sv-cover-top { width: 240px; height: 70px; }
-    .sv-cover-bottom { height: 56px; }
   }
 
   /* ===== RESULT OVERLAY ===== */
@@ -317,8 +313,6 @@
 <div id="game-area">
   <div id="streetview-container">
     <div id="sv-loading">Loading street view...</div>
-    <div class="sv-cover-top"></div>
-    <div class="sv-cover-bottom"></div>
   </div>
   <div id="map-panel">
     <button id="map-toggle" onclick="toggleMap(false)">&#x2715;</button>
@@ -507,15 +501,20 @@ function updateDailyBtnForRegion(btnId, infoId, region, defaultSub) {
   }
 }
 
-// ===== LOAD STREET VIEW =====
+// ===== CUSTOM PANORAMA VIEWER (tile-based, no Google UI) =====
+let panoCleanup = null; // stores cleanup function for event listeners
+
 function loadStreetView(panoId, lat, lng) {
   const container = document.getElementById('streetview-container');
   const loading = document.getElementById('sv-loading');
-  const oldIframe = container.querySelector('iframe');
-  if (oldIframe) oldIframe.remove();
+
+  // Cleanup previous viewer
+  if (panoCleanup) { panoCleanup(); panoCleanup = null; }
+  const oldViewer = document.getElementById('pano-viewer');
+  if (oldViewer) oldViewer.remove();
   loading.style.display = 'flex';
 
-  // Use seeded heading for daily mode so everyone sees same view
+  // Heading
   let heading;
   if (gameMode === 'daily') {
     const seed = dateToSeed(getTodayStr() + panoId);
@@ -523,15 +522,108 @@ function loadStreetView(panoId, lat, lng) {
   } else {
     heading = Math.floor(Math.random() * 360);
   }
-  const ts = Date.now();
-  const iframe = document.createElement('iframe');
-  iframe.src = `https://www.google.com/maps/embed?pb=!4v${ts}!6m8!1m7!1s${encodeURIComponent(panoId)}!2m2!1d${lat}!2d${lng}!3f${heading}!4f5!5f0.7820865974627469`;
-  iframe.allow = "accelerometer; gyroscope";
-  iframe.referrerPolicy = "no-referrer-when-downgrade";
-  iframe.allowFullscreen = true;
-  iframe.style.cssText = 'width:100%;height:100%;border:none;';
-  iframe.onload = () => { loading.style.display = 'none'; };
-  container.appendChild(iframe);
+
+  // Create viewer
+  const viewer = document.createElement('div');
+  viewer.id = 'pano-viewer';
+  const strip = document.createElement('div');
+  strip.className = 'pano-strip';
+
+  // Tile config: zoom 3 = 8 cols x 4 rows, each 512px
+  const zoom = 3, cols = 8, rows = 4, tileSize = 512;
+  const totalW = cols * tileSize; // 4096
+  const totalH = rows * tileSize; // 2048
+
+  // Two copies side by side for seamless horizontal wrapping
+  let loadedCount = 0;
+  const neededForShow = cols * rows; // first copy
+  for (let copy = 0; copy < 2; copy++) {
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const img = document.createElement('img');
+        img.src = `https://cbk0.google.com/cbk?output=tile&panoid=${encodeURIComponent(panoId)}&zoom=${zoom}&x=${x}&y=${y}`;
+        img.style.cssText = `left:${x * tileSize + copy * totalW}px;top:${y * tileSize}px;width:${tileSize}px;height:${tileSize}px;`;
+        img.draggable = false;
+        img.onload = () => {
+          loadedCount++;
+          if (loadedCount >= neededForShow) loading.style.display = 'none';
+        };
+        img.onerror = () => {
+          loadedCount++;
+          if (loadedCount >= neededForShow) loading.style.display = 'none';
+        };
+        strip.appendChild(img);
+      }
+    }
+  }
+
+  strip.style.width = (totalW * 2) + 'px';
+  strip.style.height = totalH + 'px';
+  viewer.appendChild(strip);
+  container.insertBefore(viewer, loading);
+
+  // Initial position: center on heading, center vertically
+  const cW = container.clientWidth;
+  const cH = container.clientHeight;
+  let panX = -(heading / 360) * totalW;
+  let panY = -(totalH - cH) / 2;
+  panY = Math.max(-(totalH - cH), Math.min(0, panY));
+
+  strip.style.transform = `translate(${panX}px, ${panY}px)`;
+
+  // Drag interaction
+  let dragging = false, lastX = 0, lastY = 0;
+
+  function onPointerDown(x, y) {
+    dragging = true;
+    lastX = x; lastY = y;
+  }
+
+  function onPointerMove(x, y) {
+    if (!dragging) return;
+    const dx = x - lastX;
+    const dy = y - lastY;
+    lastX = x; lastY = y;
+
+    panX += dx;
+    panY += dy;
+
+    // Wrap horizontally (seamless with two copies)
+    if (panX > 0) panX -= totalW;
+    if (panX < -totalW) panX += totalW;
+
+    // Clamp vertically
+    const maxDown = 0;
+    const maxUp = -(totalH - cH);
+    panY = Math.max(maxUp, Math.min(maxDown, panY));
+
+    strip.style.transform = `translate(${panX}px, ${panY}px)`;
+  }
+
+  function onPointerUp() { dragging = false; }
+
+  // Mouse events
+  function onMouseDown(e) { e.preventDefault(); onPointerDown(e.clientX, e.clientY); }
+  function onMouseMove(e) { onPointerMove(e.clientX, e.clientY); }
+  function onMouseUp() { onPointerUp(); }
+
+  // Touch events
+  function onTouchStart(e) { onPointerDown(e.touches[0].clientX, e.touches[0].clientY); }
+  function onTouchMove(e) { e.preventDefault(); onPointerMove(e.touches[0].clientX, e.touches[0].clientY); }
+  function onTouchEnd() { onPointerUp(); }
+
+  viewer.addEventListener('mousedown', onMouseDown);
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseup', onMouseUp);
+  viewer.addEventListener('touchstart', onTouchStart, { passive: true });
+  viewer.addEventListener('touchmove', onTouchMove, { passive: false });
+  viewer.addEventListener('touchend', onTouchEnd);
+
+  // Cleanup function to remove document-level listeners
+  panoCleanup = () => {
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+  };
 }
 
 // ===== MAP SETUP =====
