@@ -12,6 +12,8 @@
   gtag('js', new Date());
   gtag('config', 'G-XXXXXXXXXX');
 </script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
@@ -255,6 +257,32 @@
   #daily-completed-score, #lebo-daily-completed-score { font-size: 14px; color: #22c55e; margin-top: 6px; font-weight: 600; }
   .region-divider { width: 200px; height: 1px; background: #2a2a4a; margin: 24px 0 12px; }
   .region-label { font-size: 14px; color: #8892b0; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 12px; }
+
+  /* Username input */
+  .username-section { margin-bottom: 28px; text-align: center; }
+  .username-section label { font-size: 13px; color: #4a5580; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+  .username-input {
+    background: #141828; border: 2px solid #2a2a4a; border-radius: 8px;
+    color: #fff; font-family: 'Inter', sans-serif; font-size: 16px; font-weight: 700;
+    padding: 10px 16px; text-align: center; width: 220px; outline: none;
+    transition: border-color 0.2s;
+  }
+  .username-input:focus { border-color: #f5c518; }
+  .username-input::placeholder { color: #4a5580; font-weight: 400; }
+
+  /* Leaderboard */
+  #leaderboard { margin: 20px 0 8px; text-align: left; min-width: 300px; max-width: 360px; }
+  .leaderboard-title { font-size: 13px; color: #4a5580; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; margin-bottom: 10px; text-align: center; }
+  .lb-row {
+    display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+    border-bottom: 1px solid #1a2040; font-size: 14px; color: #8892b0;
+  }
+  .lb-row.me { background: rgba(245,197,24,0.08); border-radius: 6px; color: #f5c518; }
+  .lb-rank { width: 24px; font-weight: 800; color: #4a5580; text-align: center; }
+  .lb-row.me .lb-rank { color: #f5c518; }
+  .lb-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lb-score { font-weight: 800; color: #f5c518; }
+  .lb-loading { text-align: center; color: #4a5580; font-size: 13px; padding: 12px; }
 </style>
 </head>
 <body>
@@ -264,6 +292,10 @@
   <div class="title-container">
     <h1><span style="color:#f5c518">Pittsburgh</span><span style="color:#fff">Guessr</span></h1>
     <p class="subtitle">How well do you know the Steel City?</p>
+  </div>
+  <div class="username-section">
+    <label>Your Name</label>
+    <input type="text" id="username-input" class="username-input" placeholder="Enter a name..." maxlength="20" autocomplete="off">
   </div>
   <div class="mode-buttons">
     <button class="mode-btn daily-btn" id="daily-btn" onclick="startGame('daily', 'pittsburgh')">
@@ -300,6 +332,7 @@
   <div class="big-score" id="final-score">0</div>
   <div class="max-score">out of 25,000</div>
   <div id="round-scores"></div>
+  <div id="leaderboard"></div>
   <button class="play-btn" onclick="showStartScreen()">PLAY AGAIN</button>
   <button id="share-btn" onclick="shareResults()" style="display:none">COPY RESULTS</button>
 </div>
@@ -847,10 +880,11 @@ function submitGuess() {
   }, 150);
 }
 
-function endGame() {
+async function endGame() {
   // Save daily result
   if (gameMode === 'daily') {
     saveDailyResult();
+    await submitScore(totalScore);
   }
 
   document.getElementById('final-score').textContent = totalScore.toLocaleString();
@@ -873,6 +907,9 @@ function endGame() {
   }
 
   document.getElementById('end-screen').classList.add('active');
+
+  // Load leaderboard for daily mode
+  loadLeaderboard();
 }
 
 // ===== SHARE RESULTS =====
@@ -886,7 +923,7 @@ function shareResults() {
   }).join('');
 
   const regionName = gameRegion === 'lebo' ? 'Mt. Lebanon' : 'Pittsburgh';
-  const text = `PittsburghGuessr ${regionName} Daily \u2014 ${dateStr}\nScore: ${totalScore.toLocaleString()} / 25,000\n${blocks}\nhttps://tomp-utw.github.io/pittsburghguessr/`;
+  const text = `PittsburghGuessr ${regionName} Daily \u2014 ${dateStr}\nScore: ${totalScore.toLocaleString()} / 25,000\n${blocks}\nhttps://pittsburghguessr.netlify.app`;
 
   navigator.clipboard.writeText(text).then(() => {
     const btn = document.getElementById('share-btn');
@@ -910,7 +947,96 @@ function toggleMap(show) {
   }
 }
 
+// ===== FIREBASE & LEADERBOARD =====
+const firebaseConfig = {
+  apiKey: "FIREBASE_API_KEY",
+  authDomain: "FIREBASE_PROJECT_ID.firebaseapp.com",
+  projectId: "FIREBASE_PROJECT_ID",
+  storageBucket: "FIREBASE_PROJECT_ID.firebasestorage.app",
+  messagingSenderId: "FIREBASE_SENDER_ID",
+  appId: "FIREBASE_APP_ID"
+};
+
+let db = null;
+try {
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+} catch(e) { console.warn('Firebase not configured yet'); }
+
+function getUsername() {
+  return (document.getElementById('username-input').value || '').trim() || 'Anonymous';
+}
+
+function loadUsername() {
+  const saved = localStorage.getItem('pgh-username');
+  if (saved) document.getElementById('username-input').value = saved;
+}
+
+function saveUsername() {
+  const name = getUsername();
+  localStorage.setItem('pgh-username', name);
+  return name;
+}
+
+async function submitScore(score) {
+  if (!db || gameMode !== 'daily') return;
+  const name = saveUsername();
+  const today = getTodayStr();
+  const docId = `${gameRegion}_${today}_${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+  try {
+    await db.collection('daily_scores').doc(docId).set({
+      name: name,
+      score: score,
+      region: gameRegion,
+      date: today,
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  } catch(e) { console.warn('Failed to submit score:', e); }
+}
+
+async function loadLeaderboard() {
+  const container = document.getElementById('leaderboard');
+  if (!db || gameMode !== 'daily') { container.innerHTML = ''; return; }
+
+  const today = getTodayStr();
+  const regionLabel = gameRegion === 'lebo' ? 'Mt. Lebo' : 'Pittsburgh';
+  container.innerHTML = `<div class="leaderboard-title">${regionLabel} Daily Leaderboard</div><div class="lb-loading">Loading...</div>`;
+
+  try {
+    const snap = await db.collection('daily_scores')
+      .where('date', '==', today)
+      .where('region', '==', gameRegion)
+      .orderBy('score', 'desc')
+      .limit(10)
+      .get();
+
+    const myName = getUsername().toLowerCase();
+    let html = `<div class="leaderboard-title">${regionLabel} Daily Leaderboard</div>`;
+
+    if (snap.empty) {
+      html += '<div class="lb-loading">No scores yet today. You\'re the first!</div>';
+    } else {
+      snap.docs.forEach((doc, i) => {
+        const d = doc.data();
+        const isMe = d.name.toLowerCase() === myName;
+        html += `<div class="lb-row${isMe ? ' me' : ''}">
+          <span class="lb-rank">${i + 1}</span>
+          <span class="lb-name">${d.name}</span>
+          <span class="lb-score">${d.score.toLocaleString()}</span>
+        </div>`;
+      });
+    }
+    container.innerHTML = html;
+  } catch(e) {
+    console.warn('Leaderboard load failed:', e);
+    container.innerHTML = `<div class="leaderboard-title">${regionLabel} Daily Leaderboard</div><div class="lb-loading">Could not load leaderboard</div>`;
+  }
+}
+
 // ===== INIT =====
+loadUsername();
+// Save username on change
+document.getElementById('username-input').addEventListener('input', () => saveUsername());
 updateDailyButton();
 </script>
 </body>
