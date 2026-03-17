@@ -3,3 +3,6 @@ __pycache__/
 locations.json
 locations_type2.json
 .claude/
+
+# Local Netlify folder
+.netlify
